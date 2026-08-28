@@ -4,6 +4,9 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   LineChart,
   Line,
+  BarChart,
+  Bar,
+  Legend,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -19,22 +22,24 @@ import {
   TrendingDown,
   ChevronLeft,
   ChevronRight,
-  Tag,
   X,
   LogOut,
   LayoutGrid,
   CalendarDays,
   List,
   Pencil,
+  Settings as SettingsIcon,
+  Check,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const MONTH_COUNT = 24;
-const PALETTE = ["emerald", "amber", "rose", "sky", "violet", "orange", "teal", "fuchsia"];
+const PALETTE = ["emerald", "amber", "rose", "sky", "violet", "orange", "teal", "fuchsia", "lime", "cyan", "pink", "indigo", "stone"];
 const MONTH_NAMES = [
   "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
   "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
 ];
+const PERIODICITIES = ["Annuelle", "Aucune", "Hebdomadaire", "Mensuelle", "PayPal 4x", "Semestrielle", "Trimestrielle"];
 
 function todayMonthKey() {
   const d = new Date();
@@ -61,26 +66,11 @@ function formatEUR(n) {
     maximumFractionDigits: 0,
   }).format(Math.round(n));
 }
-
-const DEFAULT_CATEGORIES = [
-  { name: "Loyers perçus", type: "revenu", color: "emerald" },
-  { name: "Salaires", type: "revenu", color: "sky" },
-  { name: "Charges logement", type: "depense", color: "amber" },
-  { name: "Prêts immobiliers", type: "depense", color: "rose" },
-  { name: "Taxes foncières", type: "depense", color: "orange" },
-  { name: "Assurances", type: "depense", color: "violet" },
-  { name: "Vacances / loisirs", type: "depense", color: "fuchsia" },
-  { name: "Divers", type: "depense", color: "teal" },
-];
-
-const PERIODICITIES = ["Annuelle", "Aucune", "Hebdomadaire", "Mensuelle", "PayPal 4x", "Semestrielle", "Trimestrielle"];
-
 function monthDiff(a, b) {
   const [ay, am] = a.split("-").map(Number);
   const [by, bm] = b.split("-").map(Number);
   return (ay * 12 + am) - (by * 12 + bm);
 }
-
 function entryAppliesToMonth(e, month) {
   const diff = monthDiff(month, e.month);
   if (diff < 0) return false;
@@ -102,47 +92,65 @@ function entryAppliesToMonth(e, month) {
       return diff === 0;
   }
 }
+function weeklyDaysInMonth(entry, month) {
+  const total = daysInMonth(month);
+  const anchor = entry.day || 1;
+  const days = [];
+  for (let k = 0; k < 6; k++) {
+    const d = anchor + 7 * k;
+    if (d > total) break;
+    days.push(d);
+  }
+  return days.length ? days : [Math.min(anchor, total)];
+}
+function entryOccurrencesInMonth(entry, month) {
+  if (!entryAppliesToMonth(entry, month)) return [];
+  if (entry.periodicity === "Hebdomadaire") return weeklyDaysInMonth(entry, month);
+  return [entry.day || 1];
+}
+function monthlyTotalByType(list, month, type) {
+  return list.reduce((sum, e) => {
+    if (e.type !== type) return sum;
+    const occ = entryOccurrencesInMonth(e, month);
+    return sum + Number(e.amount) * occ.length;
+  }, 0);
+}
+function netForMonth(list, month) {
+  return monthlyTotalByType(list, month, "credit") - monthlyTotalByType(list, month, "debit");
+}
 
 const NAV_ITEMS = [
-  { key: "simulation", label: "Simulation budgétaire 24 mois", icon: LayoutGrid },
-  { key: "monthly", label: "Vue mensuelle", icon: CalendarDays },
   { key: "entries", label: "Écritures", icon: List },
+  { key: "monthly", label: "Vue mensuelle", icon: CalendarDays },
+  { key: "simulation", label: "Simulation budgétaire 24 mois", icon: LayoutGrid },
 ];
 
 export default function BudgetApp({ session }) {
-  const [activeTab, setActiveTab] = useState("simulation");
+  const [activeTab, setActiveTab] = useState("entries");
   const [settings, setSettings] = useState(null);
   const [categories, setCategories] = useState([]);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
-  const [showForm, setShowForm] = useState(false);
-  const [showCategories, setShowCategories] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
       const [{ data: s }, { data: cats }, { data: ents }] = await Promise.all([
         supabase.from("settings").select("*").eq("id", 1).maybeSingle(),
-        supabase.from("categories").select("*").order("created_at", { ascending: true }),
+        supabase.from("categories").select("*").order("name", { ascending: true }),
         supabase.from("entries").select("*").order("month", { ascending: true }),
       ]);
 
       if (!s) {
         const startMonth = todayMonthKey();
-        await supabase.from("settings").insert({ id: 1, solde_initial: 0, start_month: startMonth });
-        setSettings({ solde_initial: 0, start_month: startMonth });
+        await supabase.from("settings").insert({ id: 1, solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false });
+        setSettings({ solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false });
       } else {
         setSettings(s);
       }
 
-      if (!cats || cats.length === 0) {
-        const { data: inserted } = await supabase.from("categories").insert(DEFAULT_CATEGORIES).select();
-        setCategories(inserted || []);
-      } else {
-        setCategories(cats);
-      }
-
+      setCategories(cats || []);
       setEntries(ents || []);
       setErrorMsg("");
     } catch (e) {
@@ -174,37 +182,32 @@ export default function BudgetApp({ session }) {
     return map;
   }, [categories]);
 
-  function entriesForMonth(month) {
-    return entries.filter((e) => entryAppliesToMonth(e, month));
-  }
-  function netForMonth(month) {
-    return entriesForMonth(month).reduce((sum, e) => {
-      const cat = categoryById[e.category_id];
-      const sign = cat && cat.type === "revenu" ? 1 : -1;
-      return sum + sign * Number(e.amount);
-    }, 0);
-  }
+  const calcEntries = useMemo(
+    () => entries.filter((e) => e.active || settings?.include_inactive_in_calcs),
+    [entries, settings]
+  );
 
   const chartData = useMemo(() => {
     if (!settings) return [];
     let bal = Number(settings.solde_initial) || 0;
     return months.map((m) => {
-      bal += netForMonth(m);
-      return { month: m, label: monthLabel(m, true), solde: Math.round(bal), soldeFin: bal };
+      bal += netForMonth(calcEntries, m);
+      return {
+        month: m,
+        label: monthLabel(m, true),
+        solde: Math.round(bal),
+        soldeFin: bal,
+        depenses: Math.round(monthlyTotalByType(calcEntries, m, "debit")),
+        recettes: Math.round(monthlyTotalByType(calcEntries, m, "credit")),
+      };
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, months, entries, categories]);
+  }, [settings, months, calcEntries]);
 
   const soldeActuel = chartData[0] ? chartData[0].solde : 0;
   const soldeHorizon = chartData[MONTH_COUNT - 1] ? chartData[MONTH_COUNT - 1].solde : 0;
-  const avgRevenu = months.length
-    ? months.reduce((sum, m) => sum + entriesForMonth(m).filter((e) => categoryById[e.category_id]?.type === "revenu").reduce((s, e) => s + Number(e.amount), 0), 0) / months.length
-    : 0;
-  const avgDepense = months.length
-    ? months.reduce((sum, m) => sum + entriesForMonth(m).filter((e) => categoryById[e.category_id]?.type === "depense").reduce((s, e) => s + Number(e.amount), 0), 0) / months.length
-    : 0;
+  const avgRevenu = chartData.length ? chartData.reduce((s, c) => s + c.recettes, 0) / chartData.length : 0;
+  const avgDepense = chartData.length ? chartData.reduce((s, c) => s + c.depenses, 0) / chartData.length : 0;
 
-  // Balance carried into the start of the currently selected month (before that month's own entries)
   const soldeDebutMoisActif = useMemo(() => {
     if (!settings) return 0;
     if (activeIdx === 0) return Number(settings.solde_initial) || 0;
@@ -216,52 +219,45 @@ export default function BudgetApp({ session }) {
   }
 
   const activeMonth = months[activeIdx];
-  const activeEntries = entriesForMonth(activeMonth);
 
-  async function addEntry(entry) {
-    const { error } = await supabase.from("entries").insert({
-      category_id: entry.categoryId,
-      label: entry.label,
-      amount: entry.amount,
-      month: entry.month,
-      day: entry.day,
-      periodicity: entry.periodicity,
-      recurring_end: entry.recurringEnd,
-    });
-    if (error) setErrorMsg("Impossible d'ajouter cette entrée.");
-    else fetchAll();
-  }
-  async function deleteEntry(id) {
-    const { error } = await supabase.from("entries").delete().eq("id", id);
-    if (error) setErrorMsg("Impossible de supprimer cette entrée.");
-    else fetchAll();
-  }
-  async function updateEntryRow(id, fields) {
-    const { error } = await supabase
-      .from("entries")
-      .update({
-        category_id: fields.categoryId,
-        label: fields.label,
-        amount: fields.amount,
-        month: fields.month,
-        day: fields.day,
-        periodicity: fields.periodicity,
-        recurring_end: fields.recurringEnd,
-      })
-      .eq("id", id);
-    if (error) { setErrorMsg("Impossible de modifier cette entrée."); return false; }
+  async function saveEntry(fields, existingId) {
+    const payload = {
+      category_id: fields.categoryId,
+      label: fields.label,
+      amount: fields.amount,
+      type: fields.type,
+      month: fields.month,
+      day: fields.day,
+      periodicity: fields.periodicity,
+      recurring_end: fields.recurringEnd,
+      active: fields.active,
+    };
+    const { error } = existingId
+      ? await supabase.from("entries").update(payload).eq("id", existingId)
+      : await supabase.from("entries").insert(payload);
+    if (error) { setErrorMsg("Impossible d'enregistrer cette écriture."); return false; }
     fetchAll();
     return true;
   }
-  async function addCategory(name, type, color) {
-    const { error } = await supabase.from("categories").insert({ name, type, color });
+  async function deleteEntry(id) {
+    const { error } = await supabase.from("entries").delete().eq("id", id);
+    if (error) setErrorMsg("Impossible de supprimer cette écriture.");
+    else fetchAll();
+  }
+  async function addCategory(name, color) {
+    const { error } = await supabase.from("categories").insert({ name, color });
     if (error) setErrorMsg("Impossible d'ajouter cette catégorie.");
+    else fetchAll();
+  }
+  async function updateCategory(id, fields) {
+    const { error } = await supabase.from("categories").update(fields).eq("id", id);
+    if (error) setErrorMsg("Impossible de modifier cette catégorie.");
     else fetchAll();
   }
   async function removeCategory(id) {
     const { error } = await supabase.from("categories").delete().eq("id", id);
     if (error) {
-      setErrorMsg("Cette catégorie est utilisée par des entrées : supprimez-les d'abord.");
+      setErrorMsg("Cette catégorie est utilisée par des écritures : réaffectez-les d'abord.");
       return false;
     }
     fetchAll();
@@ -273,6 +269,11 @@ export default function BudgetApp({ session }) {
     setSettings((s) => ({ ...s, solde_initial: value }));
     const { error } = await supabase.from("settings").update({ solde_initial: value }).eq("id", 1);
     if (error) setErrorMsg("Impossible d'enregistrer le solde de départ.");
+  }
+  async function updateDisplaySetting(key, value) {
+    setSettings((s) => ({ ...s, [key]: value }));
+    const { error } = await supabase.from("settings").update({ [key]: value }).eq("id", 1);
+    if (error) setErrorMsg("Impossible d'enregistrer ce réglage.");
   }
   async function logout() {
     await supabase.auth.signOut();
@@ -302,22 +303,31 @@ export default function BudgetApp({ session }) {
               </button>
             );
           })}
+          <div className="pt-2 mt-2 border-t border-stone-200">
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`w-full flex items-center gap-2 text-left text-sm px-3 py-2 rounded-md ${
+                activeTab === "settings" ? "bg-stone-700 text-white" : "text-stone-500 hover:bg-stone-200"
+              }`}
+            >
+              <SettingsIcon size={16} /> Paramétrage
+            </button>
+          </div>
         </nav>
         <button onClick={logout} className="flex items-center gap-2 text-sm text-stone-500 px-3 py-2 rounded-md hover:bg-stone-200">
           <LogOut size={16} /> Déconnexion
         </button>
       </aside>
 
-      {/* Mobile tab bar */}
       <div className="sm:hidden fixed bottom-0 inset-x-0 bg-stone-100 border-t border-stone-200 flex z-10">
-        {NAV_ITEMS.map((item) => {
+        {[...NAV_ITEMS, { key: "settings", label: "Paramétrage", icon: SettingsIcon }].map((item) => {
           const Icon = item.icon;
           const active = activeTab === item.key;
           return (
             <button
               key={item.key}
               onClick={() => setActiveTab(item.key)}
-              className={`flex-1 flex flex-col items-center gap-1 py-2 text-[11px] ${active ? "text-emerald-800" : "text-stone-500"}`}
+              className={`flex-1 flex flex-col items-center gap-1 py-2 text-[11px] ${active ? (item.key === "settings" ? "text-stone-700" : "text-emerald-800") : "text-stone-500"}`}
             >
               <Icon size={18} />
               {item.label.split(" ")[0]}
@@ -329,6 +339,41 @@ export default function BudgetApp({ session }) {
       <main className="flex-1 min-w-0 pb-16 sm:pb-0">
         {errorMsg && (
           <div className="m-5 sm:m-8 sm:mb-0 text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">{errorMsg}</div>
+        )}
+
+        {activeTab === "entries" && (
+          <div className="max-w-5xl mx-auto p-5 sm:p-8 space-y-6">
+            <div>
+              <h1 className="font-serif text-2xl text-emerald-900 tracking-tight">Écritures</h1>
+              <p className="text-stone-500 text-sm mt-1">Toutes les écritures, par catégorie. Clique une ligne pour la modifier.</p>
+            </div>
+            <EntriesManager
+              entries={entries}
+              categories={categories}
+              categoryById={categoryById}
+              months={months}
+              settings={settings}
+              onSave={saveEntry}
+              onDelete={deleteEntry}
+            />
+          </div>
+        )}
+
+        {activeTab === "monthly" && (
+          <div className="max-w-3xl mx-auto p-5 sm:p-8 space-y-6">
+            <div>
+              <h1 className="font-serif text-2xl text-emerald-900 tracking-tight">Vue mensuelle</h1>
+              <p className="text-stone-500 text-sm mt-1">Détail jour par jour, avec solde cumulé.</p>
+            </div>
+            <MonthPicker months={months} activeIdx={activeIdx} setActiveIdx={setActiveIdx} />
+            <DailyView
+              month={activeMonth}
+              entries={entries}
+              categoryById={categoryById}
+              settings={settings}
+              startBalance={soldeDebutMoisActif}
+            />
+          </div>
         )}
 
         {activeTab === "simulation" && (
@@ -357,6 +402,7 @@ export default function BudgetApp({ session }) {
             </div>
 
             <div className="bg-white rounded-lg border border-stone-200 p-4">
+              <p className="text-xs text-stone-500 mb-2">Solde cumulé</p>
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
                   <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -371,116 +417,37 @@ export default function BudgetApp({ session }) {
               </div>
             </div>
 
-            <MonthPicker months={months} activeIdx={activeIdx} setActiveIdx={setActiveIdx} />
-
             <div className="bg-white rounded-lg border border-stone-200 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-serif text-lg text-stone-800">{activeMonth ? monthLabel(activeMonth) : ""}</h3>
-                <button onClick={() => setShowForm(true)} className="flex items-center gap-1 text-xs font-medium bg-emerald-800 text-white px-3 py-1.5 rounded-md hover:bg-emerald-900">
-                  <Plus size={14} /> Ajouter
-                </button>
+              <p className="text-xs text-stone-500 mb-2">Dépenses et recettes du mois (valeur absolue)</p>
+              <div style={{ width: "100%", height: 220 }}>
+                <ResponsiveContainer>
+                  <BarChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#78716c" }} interval={2} axisLine={{ stroke: "#e7e5e4" }} tickLine={false} />
+                    <YAxis tick={{ fontSize: 11, fill: "#78716c" }} axisLine={false} tickLine={false} width={60} tickFormatter={(v) => `${Math.round(v / 1000)}k€`} />
+                    <Tooltip formatter={(v) => formatEUR(v)} labelStyle={{ color: "#1c1917" }} contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid #e7e5e4" }} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="recettes" name="Recettes" fill="#0d9488" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="depenses" name="Dépenses" fill="#e11d48" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-
-              {activeEntries.length === 0 ? (
-                <p className="text-sm text-stone-400 py-4 text-center">Aucune entrée pour ce mois.</p>
-              ) : (
-                <ul className="divide-y divide-stone-100">
-                  {activeEntries.map((e) => {
-                    const cat = categoryById[e.category_id];
-                    const isRevenu = cat?.type === "revenu";
-                    return (
-                      <li key={e.id} className="py-2.5 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className={`w-2 h-2 rounded-full shrink-0 bg-${cat?.color || "stone"}-500`} />
-                          <div className="min-w-0">
-                            <p className="text-sm text-stone-800 truncate">{e.label}</p>
-                            <p className="text-xs text-stone-400">
-                              {cat?.name || "Sans catégorie"} · jour {e.day || 1}
-                              {e.periodicity && e.periodicity !== "Aucune" ? ` · ${e.periodicity}${e.recurring_end ? ` jusqu'à ${monthLabel(e.recurring_end, true)}` : ""}` : ""}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <span className={`font-mono text-sm ${isRevenu ? "text-emerald-700" : "text-rose-700"}`}>
-                            {isRevenu ? "+" : "-"}{formatEUR(Number(e.amount))}
-                          </span>
-                          <button onClick={() => deleteEntry(e.id)} className="text-stone-400 hover:text-rose-600" aria-label="Supprimer">
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
             </div>
 
-            {showForm && (
-              <EntryForm
-                categories={categories}
-                month={activeMonth}
-                onCancel={() => setShowForm(false)}
-                onSubmit={(entry) => { addEntry(entry); setShowForm(false); }}
-              />
-            )}
-
-            <div className="bg-white rounded-lg border border-stone-200 p-4">
-              <button onClick={() => setShowCategories((v) => !v)} className="flex items-center gap-2 text-sm font-medium text-stone-700">
-                <Tag size={15} /> Catégories {showCategories ? "▲" : "▼"}
-              </button>
-              {showCategories && (
-                <div className="mt-3">
-                  <ul className="flex flex-wrap gap-2 mb-3">
-                    {categories.map((c) => (
-                      <li key={c.id} className={`flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-full text-xs border bg-${c.color}-50 border-${c.color}-200 text-${c.color}-800`}>
-                        {c.name}
-                        <span className="text-stone-400">({c.type === "revenu" ? "revenu" : "dépense"})</span>
-                        <button onClick={() => removeCategory(c.id)} className="hover:text-rose-600" aria-label={`Supprimer ${c.name}`}>
-                          <X size={13} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  <CategoryForm onAdd={addCategory} />
-                </div>
-              )}
-            </div>
-
-            <p className="text-xs text-stone-400">Synchronisé en temps réel entre tous les comptes autorisés.</p>
+            <p className="text-xs text-stone-400">Synchronisé en temps réel entre tous les comptes autorisés. Détail et saisie des écritures dans l'onglet Écritures.</p>
           </div>
         )}
 
-        {activeTab === "monthly" && (
-          <div className="max-w-3xl mx-auto p-5 sm:p-8 space-y-6">
-            <div>
-              <h1 className="font-serif text-2xl text-emerald-900 tracking-tight">Vue mensuelle</h1>
-              <p className="text-stone-500 text-sm mt-1">Détail jour par jour, avec solde cumulé.</p>
-            </div>
-            <MonthPicker months={months} activeIdx={activeIdx} setActiveIdx={setActiveIdx} />
-            <DailyView
-              month={activeMonth}
-              entries={activeEntries}
-              categoryById={categoryById}
-              startBalance={soldeDebutMoisActif}
-            />
-          </div>
-        )}
-
-        {activeTab === "entries" && (
-          <div className="max-w-5xl mx-auto p-5 sm:p-8 space-y-6">
-            <div>
-              <h1 className="font-serif text-2xl text-emerald-900 tracking-tight">Écritures</h1>
-              <p className="text-stone-500 text-sm mt-1">Toutes les écritures, par catégorie. Clique une ligne pour la modifier.</p>
-            </div>
-            <EntriesManager
-              entries={entries}
-              categories={categories}
-              categoryById={categoryById}
-              months={months}
-              onUpdate={updateEntryRow}
-              onDelete={deleteEntry}
-            />
-          </div>
+        {activeTab === "settings" && (
+          <SettingsTab
+            categories={categories}
+            entries={entries}
+            settings={settings}
+            onAddCategory={addCategory}
+            onUpdateCategory={updateCategory}
+            onRemoveCategory={removeCategory}
+            onUpdateDisplaySetting={updateDisplaySetting}
+          />
         )}
       </main>
     </div>
@@ -512,33 +479,34 @@ function MonthPicker({ months, activeIdx, setActiveIdx }) {
   );
 }
 
-function DailyView({ month, entries, categoryById, startBalance }) {
-  if (!month) return null;
-  const total = daysInMonth(month);
-
-  const byDay = useMemo(() => {
-    const map = {};
-    entries.forEach((e) => {
-      const d = e.day || 1;
-      if (!map[d]) map[d] = [];
-      map[d].push(e);
+function DailyView({ month, entries, categoryById, settings, startBalance }) {
+  const rows = useMemo(() => {
+    if (!month) return [];
+    const displayEntries = entries.filter((e) => e.active || settings?.show_inactive_entries);
+    const byDay = {};
+    displayEntries.forEach((e) => {
+      const occ = entryOccurrencesInMonth(e, month);
+      const countsInCalc = e.active || settings?.include_inactive_in_calcs;
+      occ.forEach((d) => {
+        if (!byDay[d]) byDay[d] = [];
+        byDay[d].push({ entry: e, countsInCalc });
+      });
     });
-    return map;
-  }, [entries]);
+    const days = Object.keys(byDay).map(Number).sort((a, b) => a - b);
+    let running = startBalance;
+    return days.map((d) => {
+      const dayItems = byDay[d];
+      const dayNet = dayItems.reduce((sum, { entry, countsInCalc }) => {
+        if (!countsInCalc) return sum;
+        const sign = entry.type === "credit" ? 1 : -1;
+        return sum + sign * Number(entry.amount);
+      }, 0);
+      running += dayNet;
+      return { day: d, items: dayItems, balanceAfter: running };
+    });
+  }, [month, entries, settings, startBalance]);
 
-  const days = Object.keys(byDay).map(Number).sort((a, b) => a - b);
-
-  let running = startBalance;
-  const rows = days.map((d) => {
-    const dayEntries = byDay[d];
-    const dayNet = dayEntries.reduce((sum, e) => {
-      const cat = categoryById[e.category_id];
-      const sign = cat && cat.type === "revenu" ? 1 : -1;
-      return sum + sign * Number(e.amount);
-    }, 0);
-    running += dayNet;
-    return { day: d, entries: dayEntries, balanceAfter: running };
-  });
+  if (!month) return null;
 
   return (
     <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
@@ -549,7 +517,7 @@ function DailyView({ month, entries, categoryById, startBalance }) {
         </p>
       </div>
       {rows.length === 0 ? (
-        <p className="text-sm text-stone-400 py-8 text-center">Aucune écriture ce mois-ci ({total} jours).</p>
+        <p className="text-sm text-stone-400 py-8 text-center">Aucune écriture ce mois-ci.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -565,16 +533,17 @@ function DailyView({ month, entries, categoryById, startBalance }) {
                 <td className="px-4 py-3 align-top font-mono text-stone-600">{row.day}</td>
                 <td className="px-4 py-3 align-top">
                   <ul className="space-y-1.5">
-                    {row.entries.map((e) => {
+                    {row.items.map(({ entry: e, countsInCalc }) => {
                       const cat = categoryById[e.category_id];
-                      const isRevenu = cat?.type === "revenu";
+                      const isCredit = e.type === "credit";
                       return (
-                        <li key={e.id} className="flex items-center gap-2">
+                        <li key={`${e.id}-${row.day}`} className={`flex items-center gap-2 ${!e.active ? "opacity-50" : ""}`}>
                           <span className={`w-1.5 h-1.5 rounded-full shrink-0 bg-${cat?.color || "stone"}-500`} />
                           <span className="text-stone-800">{e.label}</span>
                           <span className="text-stone-400 text-xs">{cat?.name}</span>
-                          <span className={`ml-auto font-mono text-xs ${isRevenu ? "text-emerald-700" : "text-rose-700"}`}>
-                            {isRevenu ? "+" : "-"}{formatEUR(Number(e.amount))}
+                          {!countsInCalc && <span className="text-[10px] text-stone-400 border border-stone-200 rounded px-1">exclu du calcul</span>}
+                          <span className={`ml-auto font-mono text-xs ${isCredit ? "text-emerald-700" : "text-rose-700"}`}>
+                            {isCredit ? "+" : "-"}{formatEUR(Number(e.amount))}
                           </span>
                         </li>
                       );
@@ -593,17 +562,21 @@ function DailyView({ month, entries, categoryById, startBalance }) {
   );
 }
 
-function EntriesManager({ entries, categories, categoryById, months, onUpdate, onDelete }) {
+function EntriesManager({ entries, categories, categoryById, months, settings, onSave, onDelete }) {
   const [filterCat, setFilterCat] = useState(null);
-  const [editingEntry, setEditingEntry] = useState(null);
+  const [editingEntry, setEditingEntry] = useState(undefined); // undefined = closed, null = create, obj = edit
+  const displayEntries = useMemo(
+    () => entries.filter((e) => e.active || settings?.show_inactive_entries),
+    [entries, settings]
+  );
 
   const counts = useMemo(() => {
     const m = {};
-    entries.forEach((e) => { m[e.category_id] = (m[e.category_id] || 0) + 1; });
+    displayEntries.forEach((e) => { m[e.category_id] = (m[e.category_id] || 0) + 1; });
     return m;
-  }, [entries]);
+  }, [displayEntries]);
 
-  const filtered = filterCat ? entries.filter((e) => e.category_id === filterCat) : entries;
+  const filtered = filterCat ? displayEntries.filter((e) => e.category_id === filterCat) : displayEntries;
   const sorted = useMemo(
     () => [...filtered].sort((a, b) => a.month.localeCompare(b.month) || (a.day || 1) - (b.day || 1)),
     [filtered]
@@ -619,7 +592,7 @@ function EntriesManager({ entries, categories, categoryById, months, onUpdate, o
           }`}
         >
           <span>Toutes les catégories</span>
-          <span className={filterCat === null ? "text-emerald-100" : "text-stone-400"}>{entries.length}</span>
+          <span className={filterCat === null ? "text-emerald-100" : "text-stone-400"}>{displayEntries.length}</span>
         </button>
         {categories.map((c) => (
           <button
@@ -638,94 +611,108 @@ function EntriesManager({ entries, categories, categoryById, months, onUpdate, o
         ))}
       </aside>
 
-      <div className="flex-1 min-w-0 bg-white rounded-lg border border-stone-200 overflow-x-auto">
-        {sorted.length === 0 ? (
-          <p className="text-sm text-stone-400 py-8 text-center">Aucune écriture.</p>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-stone-400 border-b border-stone-100">
-                <th className="px-4 py-2 font-medium">Libellé</th>
-                <th className="px-4 py-2 font-medium">Catégorie</th>
-                <th className="px-4 py-2 font-medium text-right">Montant</th>
-                <th className="px-4 py-2 font-medium">Récurrence</th>
-                <th className="px-4 py-2 font-medium">Mois</th>
-                <th className="px-4 py-2 font-medium w-10"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-100">
-              {sorted.map((e) => {
-                const cat = categoryById[e.category_id];
-                const isRevenu = cat?.type === "revenu";
-                return (
-                  <tr
-                    key={e.id}
-                    onClick={() => setEditingEntry(e)}
-                    className="cursor-pointer hover:bg-stone-50"
-                  >
-                    <td className="px-4 py-2.5 text-stone-800">{e.label}</td>
-                    <td className="px-4 py-2.5 text-stone-500">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className={`w-1.5 h-1.5 rounded-full bg-${cat?.color || "stone"}-500`} />
-                        {cat?.name || "—"}
-                      </span>
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-mono ${isRevenu ? "text-emerald-700" : "text-rose-700"}`}>
-                      {isRevenu ? "+" : "-"}{formatEUR(Number(e.amount))}
-                    </td>
-                    <td className="px-4 py-2.5 text-stone-500 text-xs">
-                      {e.periodicity && e.periodicity !== "Aucune"
-                        ? `${e.periodicity}${e.recurring_end ? ` jusqu'à ${monthLabel(e.recurring_end, true)}` : ""}`
-                        : "Ponctuel"}
-                    </td>
-                    <td className="px-4 py-2.5 text-stone-500 text-xs">{monthLabel(e.month, true)} · j.{e.day || 1}</td>
-                    <td className="px-4 py-2.5 text-stone-300">
-                      <Pencil size={14} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+      <div className="flex-1 min-w-0 space-y-3">
+        <div className="flex justify-end">
+          <button
+            onClick={() => setEditingEntry(null)}
+            className="flex items-center gap-1 text-xs font-medium bg-emerald-800 text-white px-3 py-1.5 rounded-md hover:bg-emerald-900"
+          >
+            <Plus size={14} /> Ajouter une écriture
+          </button>
+        </div>
+        <div className="bg-white rounded-lg border border-stone-200 overflow-x-auto">
+          {sorted.length === 0 ? (
+            <p className="text-sm text-stone-400 py-8 text-center">Aucune écriture.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-stone-400 border-b border-stone-100">
+                  <th className="px-4 py-2 font-medium">Libellé</th>
+                  <th className="px-4 py-2 font-medium">Catégorie</th>
+                  <th className="px-4 py-2 font-medium text-right">Montant</th>
+                  <th className="px-4 py-2 font-medium">Périodicité</th>
+                  <th className="px-4 py-2 font-medium">Jusqu'à</th>
+                  <th className="px-4 py-2 font-medium">Mois</th>
+                  <th className="px-4 py-2 font-medium">Actif</th>
+                  <th className="px-4 py-2 font-medium w-10"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {sorted.map((e) => {
+                  const cat = categoryById[e.category_id];
+                  const isCredit = e.type === "credit";
+                  return (
+                    <tr
+                      key={e.id}
+                      onClick={() => setEditingEntry(e)}
+                      className={`cursor-pointer hover:bg-stone-50 ${!e.active ? "opacity-50" : ""}`}
+                    >
+                      <td className="px-4 py-2.5 text-stone-800">{e.label}</td>
+                      <td className="px-4 py-2.5 text-stone-500">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className={`w-1.5 h-1.5 rounded-full bg-${cat?.color || "stone"}-500`} />
+                          {cat?.name || "—"}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-2.5 text-right font-mono ${isCredit ? "text-emerald-700" : "text-rose-700"}`}>
+                        {isCredit ? "+" : "-"}{formatEUR(Number(e.amount))}
+                      </td>
+                      <td className="px-4 py-2.5 text-stone-500 text-xs">{e.periodicity}</td>
+                      <td className="px-4 py-2.5 text-stone-500 text-xs">{e.recurring_end ? monthLabel(e.recurring_end, true) : "—"}</td>
+                      <td className="px-4 py-2.5 text-stone-500 text-xs">{monthLabel(e.month, true)} · j.{e.day || 1}</td>
+                      <td className="px-4 py-2.5 text-xs">
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${e.active ? "text-emerald-700 bg-emerald-50" : "text-stone-500 bg-stone-100"}`}>
+                          {e.active ? "Oui" : "Non"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-stone-300">
+                        <Pencil size={14} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
-      {editingEntry && (
-        <EditEntryModal
+      {editingEntry !== undefined && (
+        <EntryModal
           entry={editingEntry}
           categories={categories}
           months={months}
-          onCancel={() => setEditingEntry(null)}
+          onCancel={() => setEditingEntry(undefined)}
           onSave={async (fields) => {
-            const ok = await onUpdate(editingEntry.id, fields);
-            if (ok) setEditingEntry(null);
+            const ok = await onSave(fields, editingEntry?.id);
+            if (ok) setEditingEntry(undefined);
           }}
-          onDelete={async () => {
-            await onDelete(editingEntry.id);
-            setEditingEntry(null);
-          }}
+          onDelete={editingEntry ? async () => { await onDelete(editingEntry.id); setEditingEntry(undefined); } : null}
         />
       )}
     </div>
   );
 }
 
-function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
-  const [label, setLabel] = useState(entry.label);
-  const [categoryId, setCategoryId] = useState(entry.category_id);
-  const [amount, setAmount] = useState(String(entry.amount));
-  const [month, setMonth] = useState(entry.month);
-  const [day, setDay] = useState(entry.day || 1);
-  const [periodicity, setPeriodicity] = useState(entry.periodicity || (entry.recurring_end ? "Mensuelle" : "Aucune"));
-  const [recurringEnd, setRecurringEnd] = useState(entry.recurring_end || addMonths(entry.month, 11));
+function EntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
+  const isNew = !entry;
+  const [label, setLabel] = useState(entry?.label || "");
+  const [categoryId, setCategoryId] = useState(entry?.category_id || categories[0]?.id || "");
+  const [amount, setAmount] = useState(entry ? String(entry.amount) : "");
+  const [type, setType] = useState(entry?.type || "debit");
+  const [month, setMonth] = useState(entry?.month || months[0]);
+  const [day, setDay] = useState(entry?.day || 1);
+  const [periodicity, setPeriodicity] = useState(entry?.periodicity || "Aucune");
+  const [recurringEnd, setRecurringEnd] = useState(entry?.recurring_end || addMonths(entry?.month || months[0], 11));
+  const [active, setActive] = useState(entry ? entry.active : true);
   const [error, setError] = useState("");
   const showEnd = periodicity !== "Aucune" && periodicity !== "PayPal 4x";
 
   return (
     <div className="fixed inset-0 bg-stone-900/40 flex items-center justify-center p-4 z-20">
-      <div className="bg-white rounded-lg border border-stone-200 p-4 space-y-3 w-full max-w-md">
+      <div className="bg-white rounded-lg border border-stone-200 p-4 space-y-3 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium text-stone-700">Modifier l'écriture</h4>
+          <h4 className="text-sm font-medium text-stone-700">{isNew ? "Nouvelle écriture" : "Modifier l'écriture"}</h4>
           <button onClick={onCancel} className="text-stone-400 hover:text-stone-700" aria-label="Fermer">
             <X size={16} />
           </button>
@@ -739,8 +726,15 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
             <label className="text-xs text-stone-500 block mb-1">Catégorie</label>
             <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
               {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name} ({c.type === "revenu" ? "revenu" : "dépense"})</option>
+                <option key={c.id} value={c.id}>{c.name}</option>
               ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Type</label>
+            <select value={type} onChange={(e) => setType(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              <option value="debit">Débit (dépense)</option>
+              <option value="credit">Crédit (recette)</option>
             </select>
           </div>
           <div>
@@ -751,7 +745,7 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
             <label className="text-xs text-stone-500 block mb-1">Jour du mois</label>
             <input type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
           </div>
-          <div className="sm:col-span-2">
+          <div>
             <label className="text-xs text-stone-500 block mb-1">Mois de départ</label>
             <select value={month} onChange={(e) => setMonth(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
               {months.map((m) => (
@@ -773,12 +767,18 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
               <input type="month" value={recurringEnd} onChange={(e) => setRecurringEnd(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
             </div>
           )}
+          <div className="sm:col-span-2 flex items-center gap-1.5 pt-1">
+            <input type="checkbox" id="active-checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+            <label htmlFor="active-checkbox" className="text-xs text-stone-600">Écriture active (prise en compte selon les réglages de Paramétrage)</label>
+          </div>
         </div>
         {error && <p className="text-xs text-rose-600">{error}</p>}
         <div className="flex items-center justify-between pt-1">
-          <button onClick={onDelete} className="flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 px-2 py-1.5">
-            <Trash2 size={14} /> Supprimer
-          </button>
+          {onDelete ? (
+            <button onClick={onDelete} className="flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 px-2 py-1.5">
+              <Trash2 size={14} /> Supprimer
+            </button>
+          ) : <span />}
           <div className="flex gap-2">
             <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded-md border border-stone-300 hover:bg-stone-100">Annuler</button>
             <button
@@ -788,7 +788,8 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
                 if (!label.trim()) { setError("Entrez un libellé."); return; }
                 if (!(amt > 0)) { setError("Entrez un montant supérieur à 0."); return; }
                 if (!(d >= 1 && d <= 31)) { setError("Le jour doit être entre 1 et 31."); return; }
-                onSave({ label: label.trim(), categoryId, amount: amt, month, day: d, periodicity, recurringEnd: showEnd ? recurringEnd : null });
+                if (!categoryId) { setError("Choisissez une catégorie."); return; }
+                onSave({ label: label.trim(), categoryId, amount: amt, type, month, day: d, periodicity, recurringEnd: showEnd ? recurringEnd : null, active });
               }}
               className="px-3 py-1.5 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900"
             >
@@ -796,6 +797,113 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ColorPicker({ value, onChange }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {PALETTE.map((c) => (
+        <button
+          key={c}
+          type="button"
+          onClick={() => onChange(c)}
+          className={`w-6 h-6 rounded-full bg-${c}-500 ${value === c ? "ring-2 ring-offset-1 ring-stone-800" : ""}`}
+          aria-label={c}
+        >
+          {value === c && <Check size={12} className="text-white mx-auto" />}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SettingsTab({ categories, entries, settings, onAddCategory, onUpdateCategory, onRemoveCategory, onUpdateDisplaySetting }) {
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState(PALETTE[0]);
+  const [error, setError] = useState("");
+
+  return (
+    <div className="max-w-3xl mx-auto p-5 sm:p-8 space-y-6">
+      <div>
+        <h1 className="font-serif text-2xl text-stone-700 tracking-tight">Paramétrage</h1>
+        <p className="text-stone-500 text-sm mt-1">Catégories et options d'affichage / calcul.</p>
+      </div>
+
+      <div className="bg-white rounded-lg border border-stone-300 p-4 space-y-4">
+        <h2 className="text-sm font-medium text-stone-700">Catégories</h2>
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+        <ul className="space-y-2">
+          {categories.map((c) => (
+            <li key={c.id} className="flex items-center gap-3 border border-stone-200 rounded-md p-2.5">
+              <input
+                value={c.name}
+                onChange={(e) => onUpdateCategory(c.id, { name: e.target.value })}
+                className="flex-1 min-w-0 px-2 py-1 rounded border border-stone-200 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400"
+              />
+              <ColorPicker value={c.color} onChange={(color) => onUpdateCategory(c.id, { color })} />
+              <button
+                onClick={async () => {
+                  const ok = await onRemoveCategory(c.id);
+                  if (!ok) setError(`"${c.name}" est utilisée par des écritures : réaffectez-les avant de la supprimer.`);
+                  else setError("");
+                }}
+                className="text-stone-400 hover:text-rose-600 shrink-0"
+                aria-label={`Supprimer ${c.name}`}
+              >
+                <Trash2 size={15} />
+              </button>
+            </li>
+          ))}
+          {categories.length === 0 && <p className="text-sm text-stone-400 py-2">Aucune catégorie pour l'instant.</p>}
+        </ul>
+
+        <div className="border-t border-stone-100 pt-3 flex flex-wrap items-end gap-3">
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Nouvelle catégorie</label>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Nom" className="px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400" />
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Couleur</label>
+            <ColorPicker value={newColor} onChange={setNewColor} />
+          </div>
+          <button
+            onClick={() => { if (newName.trim()) { onAddCategory(newName.trim(), newColor); setNewName(""); } }}
+            className="px-3 py-1.5 text-sm rounded-md border border-stone-400 text-stone-700 hover:bg-stone-100"
+          >
+            <Plus size={14} className="inline -mt-0.5 mr-1" />Ajouter
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-stone-300 p-4 space-y-3">
+        <h2 className="text-sm font-medium text-stone-700">Options d'affichage et de calculs</h2>
+        <label className="flex items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={!!settings?.show_inactive_entries}
+            onChange={(e) => onUpdateDisplaySetting("show_inactive_entries", e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="text-sm text-stone-700">
+            Afficher les écritures inactives dans les listes (Écritures, Vue mensuelle)
+            <span className="block text-xs text-stone-400">Si décoché, seules les écritures actives sont visibles.</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={!!settings?.include_inactive_in_calcs}
+            onChange={(e) => onUpdateDisplaySetting("include_inactive_in_calcs", e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="text-sm text-stone-700">
+            Inclure les écritures inactives dans les calculs de budget
+            <span className="block text-xs text-stone-400">Solde, graphiques et moyennes. Décoché par défaut.</span>
+          </span>
+        </label>
       </div>
     </div>
   );
@@ -809,111 +917,6 @@ function MetricCard({ icon, label, value, tone }) {
         <span className="text-xs text-stone-500">{label}</span>
       </div>
       <p className="font-mono text-lg text-stone-900">{value}</p>
-    </div>
-  );
-}
-
-function EntryForm({ categories, month, onCancel, onSubmit }) {
-  const [label, setLabel] = useState("");
-  const [categoryId, setCategoryId] = useState(categories[0]?.id || "");
-  const [amount, setAmount] = useState("");
-  const [day, setDay] = useState(1);
-  const [periodicity, setPeriodicity] = useState("Aucune");
-  const [recurringEnd, setRecurringEnd] = useState(addMonths(month, 11));
-  const [error, setError] = useState("");
-  const showEnd = periodicity !== "Aucune" && periodicity !== "PayPal 4x";
-
-  return (
-    <div className="bg-white rounded-lg border-2 border-emerald-200 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-stone-700">Nouvelle entrée · {monthLabel(month)}</h4>
-        <button onClick={onCancel} className="text-stone-400 hover:text-stone-700" aria-label="Fermer">
-          <X size={16} />
-        </button>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label className="text-xs text-stone-500 block mb-1">Libellé</label>
-          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Loyer garage Caluire" className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-        </div>
-        <div>
-          <label className="text-xs text-stone-500 block mb-1">Catégorie</label>
-          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>{c.name} ({c.type === "revenu" ? "revenu" : "dépense"})</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="text-xs text-stone-500 block mb-1">Montant (€)</label>
-          <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="96.53" className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-        </div>
-        <div>
-          <label className="text-xs text-stone-500 block mb-1">Jour du mois</label>
-          <input type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-        </div>
-        <div>
-          <label className="text-xs text-stone-500 block mb-1">Périodicité</label>
-          <select value={periodicity} onChange={(e) => setPeriodicity(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-            {PERIODICITIES.map((p) => (
-              <option key={p} value={p}>{p}</option>
-            ))}
-          </select>
-        </div>
-        {showEnd && (
-          <div>
-            <label className="text-xs text-stone-500 block mb-1">Jusqu'à (optionnel)</label>
-            <input type="month" value={recurringEnd} onChange={(e) => setRecurringEnd(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-          </div>
-        )}
-      </div>
-      {error && <p className="text-xs text-rose-600">{error}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded-md border border-stone-300 hover:bg-stone-100">Annuler</button>
-        <button
-          onClick={() => {
-            const amt = parseFloat(amount);
-            const d = parseInt(day, 10);
-            if (!label.trim()) { setError("Entrez un libellé."); return; }
-            if (!(amt > 0)) { setError("Entrez un montant supérieur à 0."); return; }
-            if (!(d >= 1 && d <= 31)) { setError("Le jour doit être entre 1 et 31."); return; }
-            onSubmit({ label: label.trim(), categoryId, amount: amt, month, day: d, periodicity, recurringEnd: showEnd ? recurringEnd : null });
-          }}
-          className="px-3 py-1.5 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900"
-        >
-          Ajouter
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function CategoryForm({ onAdd }) {
-  const [name, setName] = useState("");
-  const [type, setType] = useState("depense");
-  const [color, setColor] = useState(PALETTE[0]);
-
-  return (
-    <div className="flex flex-wrap items-end gap-2">
-      <div>
-        <label className="text-xs text-stone-500 block mb-1">Nouvelle catégorie</label>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nom" className="px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
-      </div>
-      <select value={type} onChange={(e) => setType(e.target.value)} className="px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-        <option value="depense">Dépense</option>
-        <option value="revenu">Revenu</option>
-      </select>
-      <select value={color} onChange={(e) => setColor(e.target.value)} className="px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-        {PALETTE.map((c) => (
-          <option key={c} value={c}>{c}</option>
-        ))}
-      </select>
-      <button
-        onClick={() => { if (name.trim()) { onAdd(name.trim(), type, color); setName(""); } }}
-        className="px-3 py-1.5 text-sm rounded-md border border-emerald-300 text-emerald-800 hover:bg-emerald-50"
-      >
-        <Plus size={14} className="inline -mt-0.5 mr-1" />Ajouter
-      </button>
     </div>
   );
 }
