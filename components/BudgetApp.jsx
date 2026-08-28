@@ -24,6 +24,8 @@ import {
   LogOut,
   LayoutGrid,
   CalendarDays,
+  List,
+  Pencil,
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
@@ -74,6 +76,7 @@ const DEFAULT_CATEGORIES = [
 const NAV_ITEMS = [
   { key: "simulation", label: "Simulation budgétaire 24 mois", icon: LayoutGrid },
   { key: "monthly", label: "Vue mensuelle", icon: CalendarDays },
+  { key: "entries", label: "Écritures", icon: List },
 ];
 
 export default function BudgetApp({ session }) {
@@ -203,6 +206,22 @@ export default function BudgetApp({ session }) {
     const { error } = await supabase.from("entries").delete().eq("id", id);
     if (error) setErrorMsg("Impossible de supprimer cette entrée.");
     else fetchAll();
+  }
+  async function updateEntryRow(id, fields) {
+    const { error } = await supabase
+      .from("entries")
+      .update({
+        category_id: fields.categoryId,
+        label: fields.label,
+        amount: fields.amount,
+        month: fields.month,
+        day: fields.day,
+        recurring_end: fields.recurringEnd,
+      })
+      .eq("id", id);
+    if (error) { setErrorMsg("Impossible de modifier cette entrée."); return false; }
+    fetchAll();
+    return true;
   }
   async function addCategory(name, type, color) {
     const { error } = await supabase.from("categories").insert({ name, type, color });
@@ -416,6 +435,23 @@ export default function BudgetApp({ session }) {
             />
           </div>
         )}
+
+        {activeTab === "entries" && (
+          <div className="max-w-5xl mx-auto p-5 sm:p-8 space-y-6">
+            <div>
+              <h1 className="font-serif text-2xl text-emerald-900 tracking-tight">Écritures</h1>
+              <p className="text-stone-500 text-sm mt-1">Toutes les écritures, par catégorie. Clique une ligne pour la modifier.</p>
+            </div>
+            <EntriesManager
+              entries={entries}
+              categories={categories}
+              categoryById={categoryById}
+              months={months}
+              onUpdate={updateEntryRow}
+              onDelete={deleteEntry}
+            />
+          </div>
+        )}
       </main>
     </div>
   );
@@ -523,6 +559,210 @@ function DailyView({ month, entries, categoryById, startBalance }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+function EntriesManager({ entries, categories, categoryById, months, onUpdate, onDelete }) {
+  const [filterCat, setFilterCat] = useState(null);
+  const [editingEntry, setEditingEntry] = useState(null);
+
+  const counts = useMemo(() => {
+    const m = {};
+    entries.forEach((e) => { m[e.category_id] = (m[e.category_id] || 0) + 1; });
+    return m;
+  }, [entries]);
+
+  const filtered = filterCat ? entries.filter((e) => e.category_id === filterCat) : entries;
+  const sorted = useMemo(
+    () => [...filtered].sort((a, b) => a.month.localeCompare(b.month) || (a.day || 1) - (b.day || 1)),
+    [filtered]
+  );
+
+  return (
+    <div className="flex flex-col sm:flex-row gap-4">
+      <aside className="sm:w-64 shrink-0 space-y-1">
+        <button
+          onClick={() => setFilterCat(null)}
+          className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-md ${
+            filterCat === null ? "bg-emerald-800 text-white" : "bg-white text-stone-700 hover:bg-stone-100 border border-stone-200"
+          }`}
+        >
+          <span>Toutes les catégories</span>
+          <span className={filterCat === null ? "text-emerald-100" : "text-stone-400"}>{entries.length}</span>
+        </button>
+        {categories.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setFilterCat(c.id)}
+            className={`w-full flex items-center justify-between text-left text-sm px-3 py-2 rounded-md ${
+              filterCat === c.id ? "bg-emerald-800 text-white" : "bg-white text-stone-700 hover:bg-stone-100 border border-stone-200"
+            }`}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <span className={`w-2 h-2 rounded-full shrink-0 bg-${c.color}-500`} />
+              <span className="truncate">{c.name}</span>
+            </span>
+            <span className={filterCat === c.id ? "text-emerald-100" : "text-stone-400"}>{counts[c.id] || 0}</span>
+          </button>
+        ))}
+      </aside>
+
+      <div className="flex-1 min-w-0 bg-white rounded-lg border border-stone-200 overflow-x-auto">
+        {sorted.length === 0 ? (
+          <p className="text-sm text-stone-400 py-8 text-center">Aucune écriture.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-stone-400 border-b border-stone-100">
+                <th className="px-4 py-2 font-medium">Libellé</th>
+                <th className="px-4 py-2 font-medium">Catégorie</th>
+                <th className="px-4 py-2 font-medium text-right">Montant</th>
+                <th className="px-4 py-2 font-medium">Récurrence</th>
+                <th className="px-4 py-2 font-medium">Mois</th>
+                <th className="px-4 py-2 font-medium w-10"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+              {sorted.map((e) => {
+                const cat = categoryById[e.category_id];
+                const isRevenu = cat?.type === "revenu";
+                return (
+                  <tr
+                    key={e.id}
+                    onClick={() => setEditingEntry(e)}
+                    className="cursor-pointer hover:bg-stone-50"
+                  >
+                    <td className="px-4 py-2.5 text-stone-800">{e.label}</td>
+                    <td className="px-4 py-2.5 text-stone-500">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full bg-${cat?.color || "stone"}-500`} />
+                        {cat?.name || "—"}
+                      </span>
+                    </td>
+                    <td className={`px-4 py-2.5 text-right font-mono ${isRevenu ? "text-emerald-700" : "text-rose-700"}`}>
+                      {isRevenu ? "+" : "-"}{formatEUR(Number(e.amount))}
+                    </td>
+                    <td className="px-4 py-2.5 text-stone-500 text-xs">
+                      {e.recurring_end ? `Mensuel jusqu'à ${monthLabel(e.recurring_end, true)}` : "Ponctuel"}
+                    </td>
+                    <td className="px-4 py-2.5 text-stone-500 text-xs">{monthLabel(e.month, true)} · j.{e.day || 1}</td>
+                    <td className="px-4 py-2.5 text-stone-300">
+                      <Pencil size={14} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {editingEntry && (
+        <EditEntryModal
+          entry={editingEntry}
+          categories={categories}
+          months={months}
+          onCancel={() => setEditingEntry(null)}
+          onSave={async (fields) => {
+            const ok = await onUpdate(editingEntry.id, fields);
+            if (ok) setEditingEntry(null);
+          }}
+          onDelete={async () => {
+            await onDelete(editingEntry.id);
+            setEditingEntry(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
+  const cat = categories.find((c) => c.id === entry.category_id);
+  const [label, setLabel] = useState(entry.label);
+  const [categoryId, setCategoryId] = useState(entry.category_id);
+  const [amount, setAmount] = useState(String(entry.amount));
+  const [month, setMonth] = useState(entry.month);
+  const [day, setDay] = useState(entry.day || 1);
+  const [recurring, setRecurring] = useState(!!entry.recurring_end);
+  const [recurringEnd, setRecurringEnd] = useState(entry.recurring_end || addMonths(entry.month, 11));
+  const [error, setError] = useState("");
+
+  return (
+    <div className="fixed inset-0 bg-stone-900/40 flex items-center justify-center p-4 z-20">
+      <div className="bg-white rounded-lg border border-stone-200 p-4 space-y-3 w-full max-w-md">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-stone-700">Modifier l'écriture</h4>
+          <button onClick={onCancel} className="text-stone-400 hover:text-stone-700" aria-label="Fermer">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <label className="text-xs text-stone-500 block mb-1">Libellé</label>
+            <input value={label} onChange={(e) => setLabel(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="text-xs text-stone-500 block mb-1">Catégorie</label>
+            <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.type === "revenu" ? "revenu" : "dépense"})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Montant (€)</label>
+            <input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Jour du mois</label>
+            <input type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="text-xs text-stone-500 block mb-1">Mois de départ</label>
+            <select value={month} onChange={(e) => setMonth(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              {months.map((m) => (
+                <option key={m} value={m}>{monthLabel(m)}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-end gap-2 sm:col-span-2">
+            <label className="flex items-center gap-1.5 text-xs text-stone-600 pb-2">
+              <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
+              Récurrent chaque mois
+            </label>
+          </div>
+          {recurring && (
+            <div className="sm:col-span-2">
+              <label className="text-xs text-stone-500 block mb-1">Jusqu'à (inclus)</label>
+              <input type="month" value={recurringEnd} onChange={(e) => setRecurringEnd(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
+            </div>
+          )}
+        </div>
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+        <div className="flex items-center justify-between pt-1">
+          <button onClick={onDelete} className="flex items-center gap-1 text-xs text-rose-600 hover:text-rose-700 px-2 py-1.5">
+            <Trash2 size={14} /> Supprimer
+          </button>
+          <div className="flex gap-2">
+            <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded-md border border-stone-300 hover:bg-stone-100">Annuler</button>
+            <button
+              onClick={() => {
+                const amt = parseFloat(amount);
+                const d = parseInt(day, 10);
+                if (!label.trim()) { setError("Entrez un libellé."); return; }
+                if (!(amt > 0)) { setError("Entrez un montant supérieur à 0."); return; }
+                if (!(d >= 1 && d <= 31)) { setError("Le jour doit être entre 1 et 31."); return; }
+                onSave({ label: label.trim(), categoryId, amount: amt, month, day: d, recurringEnd: recurring ? recurringEnd : null });
+              }}
+              className="px-3 py-1.5 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900"
+            >
+              Enregistrer
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
