@@ -119,6 +119,12 @@ function netForMonth(list, month) {
   return monthlyTotalByType(list, month, "credit") - monthlyTotalByType(list, month, "debit");
 }
 
+function isObsolete(e, currentMonthStart) {
+  if (e.recurring_end && e.recurring_end < currentMonthStart) return true;
+  if (e.periodicity === "Aucune" && e.month < currentMonthStart) return true;
+  return false;
+}
+
 const NAV_ITEMS = [
   { key: "entries", label: "Écritures", icon: List },
   { key: "monthly", label: "Vue mensuelle", icon: CalendarDays },
@@ -144,8 +150,8 @@ export default function BudgetApp({ session }) {
 
       if (!s) {
         const startMonth = todayMonthKey();
-        await supabase.from("settings").insert({ id: 1, solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false });
-        setSettings({ solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false });
+        await supabase.from("settings").insert({ id: 1, solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false, hide_obsolete_entries: false });
+        setSettings({ solde_initial: 0, start_month: startMonth, show_inactive_entries: true, include_inactive_in_calcs: false, hide_obsolete_entries: false });
       } else {
         setSettings(s);
       }
@@ -565,10 +571,14 @@ function DailyView({ month, entries, categoryById, settings, startBalance }) {
 function EntriesManager({ entries, categories, categoryById, months, settings, onSave, onDelete }) {
   const [filterCat, setFilterCat] = useState(null);
   const [editingEntry, setEditingEntry] = useState(undefined); // undefined = closed, null = create, obj = edit
-  const displayEntries = useMemo(
-    () => entries.filter((e) => e.active || settings?.show_inactive_entries),
-    [entries, settings]
-  );
+  const displayEntries = useMemo(() => {
+    let list = entries.filter((e) => e.active || settings?.show_inactive_entries);
+    if (settings?.hide_obsolete_entries) {
+      const currentMonthStart = todayMonthKey();
+      list = list.filter((e) => !isObsolete(e, currentMonthStart));
+    }
+    return list;
+  }, [entries, settings]);
 
   const counts = useMemo(() => {
     const m = {};
@@ -700,10 +710,10 @@ function EntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
   const [categoryId, setCategoryId] = useState(entry?.category_id || categories[0]?.id || "");
   const [amount, setAmount] = useState(entry ? String(entry.amount) : "");
   const [type, setType] = useState(entry?.type || "debit");
-  const [month, setMonth] = useState(entry?.month || months[0]);
+  const [month, setMonth] = useState(entry?.month || todayMonthKey());
   const [day, setDay] = useState(entry?.day || 1);
   const [periodicity, setPeriodicity] = useState(entry?.periodicity || "Aucune");
-  const [recurringEnd, setRecurringEnd] = useState(entry?.recurring_end || addMonths(entry?.month || months[0], 11));
+  const [recurringEnd, setRecurringEnd] = useState(entry?.recurring_end || addMonths(entry?.month || todayMonthKey(), 11));
   const [active, setActive] = useState(entry ? entry.active : true);
   const [error, setError] = useState("");
   const showEnd = periodicity !== "Aucune" && periodicity !== "PayPal 4x";
@@ -747,11 +757,7 @@ function EntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
           </div>
           <div>
             <label className="text-xs text-stone-500 block mb-1">Mois de départ</label>
-            <select value={month} onChange={(e) => setMonth(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
-              {months.map((m) => (
-                <option key={m} value={m}>{monthLabel(m)}</option>
-              ))}
-            </select>
+            <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
           </div>
           <div>
             <label className="text-xs text-stone-500 block mb-1">Périodicité</label>
@@ -902,6 +908,20 @@ function SettingsTab({ categories, entries, settings, onAddCategory, onUpdateCat
           <span className="text-sm text-stone-700">
             Inclure les écritures inactives dans les calculs de budget
             <span className="block text-xs text-stone-400">Solde, graphiques et moyennes. Décoché par défaut.</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2.5">
+          <input
+            type="checkbox"
+            checked={!!settings?.hide_obsolete_entries}
+            onChange={(e) => onUpdateDisplaySetting("hide_obsolete_entries", e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="text-sm text-stone-700">
+            Masquer les écritures obsolètes dans Écritures
+            <span className="block text-xs text-stone-400">
+              Une écriture "Jusqu'à" antérieure au mois en cours, ou ponctuelle avec un mois de départ passé, est considérée obsolète.
+            </span>
           </span>
         </label>
       </div>
