@@ -73,6 +73,36 @@ const DEFAULT_CATEGORIES = [
   { name: "Divers", type: "depense", color: "teal" },
 ];
 
+const PERIODICITIES = ["Annuelle", "Aucune", "Hebdomadaire", "Mensuelle", "PayPal 4x", "Semestrielle", "Trimestrielle"];
+
+function monthDiff(a, b) {
+  const [ay, am] = a.split("-").map(Number);
+  const [by, bm] = b.split("-").map(Number);
+  return (ay * 12 + am) - (by * 12 + bm);
+}
+
+function entryAppliesToMonth(e, month) {
+  const diff = monthDiff(month, e.month);
+  if (diff < 0) return false;
+  if (e.recurring_end && month > e.recurring_end) return false;
+  switch (e.periodicity) {
+    case "Mensuelle":
+    case "Hebdomadaire":
+      return true;
+    case "Trimestrielle":
+      return diff % 3 === 0;
+    case "Semestrielle":
+      return diff % 6 === 0;
+    case "Annuelle":
+      return diff % 12 === 0;
+    case "PayPal 4x":
+      return diff <= 3;
+    case "Aucune":
+    default:
+      return diff === 0;
+  }
+}
+
 const NAV_ITEMS = [
   { key: "simulation", label: "Simulation budgétaire 24 mois", icon: LayoutGrid },
   { key: "monthly", label: "Vue mensuelle", icon: CalendarDays },
@@ -145,9 +175,7 @@ export default function BudgetApp({ session }) {
   }, [categories]);
 
   function entriesForMonth(month) {
-    return entries.filter((e) =>
-      e.recurring_end ? month >= e.month && month <= e.recurring_end : month === e.month
-    );
+    return entries.filter((e) => entryAppliesToMonth(e, month));
   }
   function netForMonth(month) {
     return entriesForMonth(month).reduce((sum, e) => {
@@ -197,6 +225,7 @@ export default function BudgetApp({ session }) {
       amount: entry.amount,
       month: entry.month,
       day: entry.day,
+      periodicity: entry.periodicity,
       recurring_end: entry.recurringEnd,
     });
     if (error) setErrorMsg("Impossible d'ajouter cette entrée.");
@@ -216,6 +245,7 @@ export default function BudgetApp({ session }) {
         amount: fields.amount,
         month: fields.month,
         day: fields.day,
+        periodicity: fields.periodicity,
         recurring_end: fields.recurringEnd,
       })
       .eq("id", id);
@@ -366,7 +396,7 @@ export default function BudgetApp({ session }) {
                             <p className="text-sm text-stone-800 truncate">{e.label}</p>
                             <p className="text-xs text-stone-400">
                               {cat?.name || "Sans catégorie"} · jour {e.day || 1}
-                              {e.recurring_end ? ` · récurrent jusqu'à ${monthLabel(e.recurring_end, true)}` : ""}
+                              {e.periodicity && e.periodicity !== "Aucune" ? ` · ${e.periodicity}${e.recurring_end ? ` jusqu'à ${monthLabel(e.recurring_end, true)}` : ""}` : ""}
                             </p>
                           </div>
                         </div>
@@ -644,7 +674,9 @@ function EntriesManager({ entries, categories, categoryById, months, onUpdate, o
                       {isRevenu ? "+" : "-"}{formatEUR(Number(e.amount))}
                     </td>
                     <td className="px-4 py-2.5 text-stone-500 text-xs">
-                      {e.recurring_end ? `Mensuel jusqu'à ${monthLabel(e.recurring_end, true)}` : "Ponctuel"}
+                      {e.periodicity && e.periodicity !== "Aucune"
+                        ? `${e.periodicity}${e.recurring_end ? ` jusqu'à ${monthLabel(e.recurring_end, true)}` : ""}`
+                        : "Ponctuel"}
                     </td>
                     <td className="px-4 py-2.5 text-stone-500 text-xs">{monthLabel(e.month, true)} · j.{e.day || 1}</td>
                     <td className="px-4 py-2.5 text-stone-300">
@@ -679,15 +711,15 @@ function EntriesManager({ entries, categories, categoryById, months, onUpdate, o
 }
 
 function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete }) {
-  const cat = categories.find((c) => c.id === entry.category_id);
   const [label, setLabel] = useState(entry.label);
   const [categoryId, setCategoryId] = useState(entry.category_id);
   const [amount, setAmount] = useState(String(entry.amount));
   const [month, setMonth] = useState(entry.month);
   const [day, setDay] = useState(entry.day || 1);
-  const [recurring, setRecurring] = useState(!!entry.recurring_end);
+  const [periodicity, setPeriodicity] = useState(entry.periodicity || (entry.recurring_end ? "Mensuelle" : "Aucune"));
   const [recurringEnd, setRecurringEnd] = useState(entry.recurring_end || addMonths(entry.month, 11));
   const [error, setError] = useState("");
+  const showEnd = periodicity !== "Aucune" && periodicity !== "PayPal 4x";
 
   return (
     <div className="fixed inset-0 bg-stone-900/40 flex items-center justify-center p-4 z-20">
@@ -727,15 +759,17 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
               ))}
             </select>
           </div>
-          <div className="flex items-end gap-2 sm:col-span-2">
-            <label className="flex items-center gap-1.5 text-xs text-stone-600 pb-2">
-              <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
-              Récurrent chaque mois
-            </label>
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Périodicité</label>
+            <select value={periodicity} onChange={(e) => setPeriodicity(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              {PERIODICITIES.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
           </div>
-          {recurring && (
-            <div className="sm:col-span-2">
-              <label className="text-xs text-stone-500 block mb-1">Jusqu'à (inclus)</label>
+          {showEnd && (
+            <div>
+              <label className="text-xs text-stone-500 block mb-1">Jusqu'à (optionnel)</label>
               <input type="month" value={recurringEnd} onChange={(e) => setRecurringEnd(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
             </div>
           )}
@@ -754,7 +788,7 @@ function EditEntryModal({ entry, categories, months, onCancel, onSave, onDelete 
                 if (!label.trim()) { setError("Entrez un libellé."); return; }
                 if (!(amt > 0)) { setError("Entrez un montant supérieur à 0."); return; }
                 if (!(d >= 1 && d <= 31)) { setError("Le jour doit être entre 1 et 31."); return; }
-                onSave({ label: label.trim(), categoryId, amount: amt, month, day: d, recurringEnd: recurring ? recurringEnd : null });
+                onSave({ label: label.trim(), categoryId, amount: amt, month, day: d, periodicity, recurringEnd: showEnd ? recurringEnd : null });
               }}
               className="px-3 py-1.5 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900"
             >
@@ -784,9 +818,10 @@ function EntryForm({ categories, month, onCancel, onSubmit }) {
   const [categoryId, setCategoryId] = useState(categories[0]?.id || "");
   const [amount, setAmount] = useState("");
   const [day, setDay] = useState(1);
-  const [recurring, setRecurring] = useState(false);
+  const [periodicity, setPeriodicity] = useState("Aucune");
   const [recurringEnd, setRecurringEnd] = useState(addMonths(month, 11));
   const [error, setError] = useState("");
+  const showEnd = periodicity !== "Aucune" && periodicity !== "PayPal 4x";
 
   return (
     <div className="bg-white rounded-lg border-2 border-emerald-200 p-4 space-y-3">
@@ -817,15 +852,17 @@ function EntryForm({ categories, month, onCancel, onSubmit }) {
           <label className="text-xs text-stone-500 block mb-1">Jour du mois</label>
           <input type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500" />
         </div>
-        <div className="flex items-end gap-2 sm:col-span-2">
-          <label className="flex items-center gap-1.5 text-xs text-stone-600 pb-2">
-            <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
-            Récurrent chaque mois
-          </label>
+        <div>
+          <label className="text-xs text-stone-500 block mb-1">Périodicité</label>
+          <select value={periodicity} onChange={(e) => setPeriodicity(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            {PERIODICITIES.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
         </div>
-        {recurring && (
-          <div className="sm:col-span-2">
-            <label className="text-xs text-stone-500 block mb-1">Jusqu'à (inclus)</label>
+        {showEnd && (
+          <div>
+            <label className="text-xs text-stone-500 block mb-1">Jusqu'à (optionnel)</label>
             <input type="month" value={recurringEnd} onChange={(e) => setRecurringEnd(e.target.value)} className="w-full px-2.5 py-1.5 rounded-md border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" />
           </div>
         )}
@@ -840,7 +877,7 @@ function EntryForm({ categories, month, onCancel, onSubmit }) {
             if (!label.trim()) { setError("Entrez un libellé."); return; }
             if (!(amt > 0)) { setError("Entrez un montant supérieur à 0."); return; }
             if (!(d >= 1 && d <= 31)) { setError("Le jour doit être entre 1 et 31."); return; }
-            onSubmit({ label: label.trim(), categoryId, amount: amt, month, day: d, recurringEnd: recurring ? recurringEnd : null });
+            onSubmit({ label: label.trim(), categoryId, amount: amt, month, day: d, periodicity, recurringEnd: showEnd ? recurringEnd : null });
           }}
           className="px-3 py-1.5 text-sm rounded-md bg-emerald-800 text-white hover:bg-emerald-900"
         >
