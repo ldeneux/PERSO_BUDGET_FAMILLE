@@ -12,7 +12,7 @@ module.exports = {
     },
   },
   safelist: [
-    { pattern: /^(bg|text|border)-(emerald|amber|rose|sky|violet|orange|teal|fuchsia|stone)-(50|200|500|700|800)$/ },
+    { pattern: /^(bg|text|border)-(emerald|amber|rose|sky|violet|orange|teal|fuchsia|lime|cyan|pink|indigo|stone)-(50|200|500|700|800)$/ },
   ],
   plugins: [],
 };
