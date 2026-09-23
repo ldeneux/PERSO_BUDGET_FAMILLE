@@ -172,9 +172,9 @@ export default function BudgetApp({ session }) {
     fetchAll();
     const channel = supabase
       .channel("budget-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "entries" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "categories" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "settings" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "budget", table: "entries" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "budget", table: "categories" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "budget", table: "settings" }, fetchAll)
       .subscribe();
     return () => supabase.removeChannel(channel);
   }, [fetchAll]);

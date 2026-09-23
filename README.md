@@ -18,8 +18,15 @@ Suis les étapes dans l'ordre. Compte environ 20-30 minutes la première fois.
 1. Dans le menu de gauche, ouvre **SQL Editor**.
 2. Ouvre le fichier `supabase/schema.sql` de ce projet, copie tout son contenu,
    colle-le dans l'éditeur SQL Supabase, puis clique **Run**.
+   (Si tu as déjà une installation précédente avec des tables dans `public`,
+   utilise plutôt `supabase/migration_to_schema.sql` pour les déplacer sans
+   perdre tes données.)
 3. Vérifie dans **Table Editor** que les tables `settings`, `categories` et
-   `entries` sont bien créées.
+   `entries` sont bien créées, dans le schéma **budget** (menu déroulant en
+   haut du Table Editor).
+4. Ouvre **Project Settings > API**, section **Exposed schemas**, et ajoute
+   `budget` à la liste (garde `public` si tu as d'autres projets dessus).
+   Sans cette étape, l'appli ne trouvera pas ses tables.
 
 Ce script active aussi la sécurité (Row Level Security) : seuls des comptes
 authentifiés pourront lire ou écrire des données, personne d'autre.
