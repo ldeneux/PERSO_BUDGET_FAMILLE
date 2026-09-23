@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
-const MONTH_COUNT = 24;
+const MONTH_COUNT = 24; // horizon glissant : toujours au moins 24 mois à partir du mois en cours
 const PALETTE = ["emerald", "amber", "rose", "sky", "violet", "orange", "teal", "fuchsia", "lime", "cyan", "pink", "indigo", "stone"];
 const MONTH_NAMES = [
   "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
@@ -138,7 +138,9 @@ export default function BudgetApp({ session }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [activeIdxOverride, setActiveIdxOverride] = useState(null);
+  const [simStartIdx, setSimStartIdx] = useState(null);
+  const [simEndIdx, setSimEndIdx] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -177,10 +179,34 @@ export default function BudgetApp({ session }) {
     return () => supabase.removeChannel(channel);
   }, [fetchAll]);
 
+  const currentMonth = useMemo(() => todayMonthKey(), []);
+
   const months = useMemo(() => {
     if (!settings) return [];
-    return Array.from({ length: MONTH_COUNT }, (_, i) => addMonths(settings.start_month, i));
-  }, [settings]);
+    // Le point de départ (start_month, ex: Août 2026) reste fixe en base.
+    // L'horizon glisse en revanche avec le mois en cours : on ajoute des mois
+    // au fur et à mesure pour toujours couvrir au moins MONTH_COUNT mois à partir d'aujourd'hui.
+    const base = monthDiff(currentMonth, settings.start_month) > 0 ? currentMonth : settings.start_month;
+    const horizonEnd = addMonths(base, MONTH_COUNT - 1);
+    const len = monthDiff(horizonEnd, settings.start_month) + 1;
+    return Array.from({ length: len }, (_, i) => addMonths(settings.start_month, i));
+  }, [settings, currentMonth]);
+
+  const currentMonthIdx = useMemo(() => {
+    if (!months.length) return 0;
+    const idx = months.indexOf(currentMonth);
+    return idx >= 0 ? idx : 0;
+  }, [months, currentMonth]);
+
+  const activeIdx = activeIdxOverride !== null ? Math.max(0, Math.min(activeIdxOverride, months.length - 1)) : currentMonthIdx;
+
+  const setActiveIdx = useCallback((updater) => {
+    setActiveIdxOverride((prev) => {
+      const base = prev !== null ? prev : currentMonthIdx;
+      const next = typeof updater === "function" ? updater(base) : updater;
+      return next;
+    });
+  }, [currentMonthIdx]);
 
   const categoryById = useMemo(() => {
     const map = {};
@@ -209,10 +235,17 @@ export default function BudgetApp({ session }) {
     });
   }, [settings, months, calcEntries]);
 
-  const soldeActuel = chartData[0] ? chartData[0].solde : 0;
-  const soldeHorizon = chartData[MONTH_COUNT - 1] ? chartData[MONTH_COUNT - 1].solde : 0;
-  const avgRevenu = chartData.length ? chartData.reduce((s, c) => s + c.recettes, 0) / chartData.length : 0;
-  const avgDepense = chartData.length ? chartData.reduce((s, c) => s + c.depenses, 0) / chartData.length : 0;
+  const soldeActuel = chartData[currentMonthIdx] ? chartData[currentMonthIdx].solde : (chartData[0] ? chartData[0].solde : 0);
+  const horizonIdx = currentMonthIdx + MONTH_COUNT - 1;
+  const soldeHorizon = chartData[horizonIdx] ? chartData[horizonIdx].solde : (chartData[chartData.length - 1] ? chartData[chartData.length - 1].solde : 0);
+  const defaultSimStart = currentMonthIdx;
+  const defaultSimEnd = Math.min(months.length - 1, currentMonthIdx + MONTH_COUNT - 1);
+  const simStart = simStartIdx !== null ? Math.max(0, Math.min(simStartIdx, months.length - 1)) : defaultSimStart;
+  const simEnd = simEndIdx !== null ? Math.max(0, Math.min(simEndIdx, months.length - 1)) : defaultSimEnd;
+  const simChartData = chartData.slice(Math.min(simStart, simEnd), Math.max(simStart, simEnd) + 1);
+
+  const avgRevenu = simChartData.length ? simChartData.reduce((s, c) => s + c.recettes, 0) / simChartData.length : 0;
+  const avgDepense = simChartData.length ? simChartData.reduce((s, c) => s + c.depenses, 0) / simChartData.length : 0;
 
   const soldeDebutMoisActif = useMemo(() => {
     if (!settings) return 0;
@@ -407,11 +440,42 @@ export default function BudgetApp({ session }) {
               <MetricCard icon={<TrendingDown size={16} />} label="Dépense moyenne / mois" value={formatEUR(avgDepense)} tone="amber" />
             </div>
 
+            <div className="flex items-center gap-2 flex-wrap text-sm text-stone-600 bg-white rounded-lg border border-stone-200 p-3">
+              <span className="text-xs text-stone-500 shrink-0">Période affichée (les 2 graphiques)</span>
+              <select
+                value={simStart}
+                onChange={(e) => setSimStartIdx(parseInt(e.target.value, 10))}
+                className="px-2 py-1.5 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                {months.map((m, i) => (
+                  <option key={m} value={i}>{monthLabel(m, true)}</option>
+                ))}
+              </select>
+              <span className="text-stone-400">→</span>
+              <select
+                value={simEnd}
+                onChange={(e) => setSimEndIdx(parseInt(e.target.value, 10))}
+                className="px-2 py-1.5 rounded-md border border-stone-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                {months.map((m, i) => (
+                  <option key={m} value={i}>{monthLabel(m, true)}</option>
+                ))}
+              </select>
+              {(simStartIdx !== null || simEndIdx !== null) && (
+                <button
+                  onClick={() => { setSimStartIdx(null); setSimEndIdx(null); }}
+                  className="text-xs text-stone-500 hover:text-stone-700 underline ml-auto"
+                >
+                  Réinitialiser (24 mois depuis aujourd'hui)
+                </button>
+              )}
+            </div>
+
             <div className="bg-white rounded-lg border border-stone-200 p-4">
               <p className="text-xs text-stone-500 mb-2">Solde cumulé</p>
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
-                  <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                  <LineChart data={simChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#78716c" }} interval={2} axisLine={{ stroke: "#e7e5e4" }} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "#78716c" }} axisLine={false} tickLine={false} width={60} tickFormatter={(v) => `${Math.round(v / 1000)}k€`} />
@@ -427,7 +491,7 @@ export default function BudgetApp({ session }) {
               <p className="text-xs text-stone-500 mb-2">Dépenses et recettes du mois (valeur absolue)</p>
               <div style={{ width: "100%", height: 220 }}>
                 <ResponsiveContainer>
-                  <BarChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                  <BarChart data={simChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#78716c" }} interval={2} axisLine={{ stroke: "#e7e5e4" }} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: "#78716c" }} axisLine={false} tickLine={false} width={60} tickFormatter={(v) => `${Math.round(v / 1000)}k€`} />
@@ -469,7 +533,7 @@ function MonthPicker({ months, activeIdx, setActiveIdx }) {
           <button onClick={() => setActiveIdx((i) => Math.max(0, i - 1))} className="p-1.5 rounded-md border border-stone-300 hover:bg-stone-100 disabled:opacity-40" disabled={activeIdx === 0} aria-label="Mois précédent">
             <ChevronLeft size={16} />
           </button>
-          <button onClick={() => setActiveIdx((i) => Math.min(MONTH_COUNT - 1, i + 1))} className="p-1.5 rounded-md border border-stone-300 hover:bg-stone-100 disabled:opacity-40" disabled={activeIdx === MONTH_COUNT - 1} aria-label="Mois suivant">
+          <button onClick={() => setActiveIdx((i) => Math.min(months.length - 1, i + 1))} className="p-1.5 rounded-md border border-stone-300 hover:bg-stone-100 disabled:opacity-40" disabled={activeIdx === months.length - 1} aria-label="Mois suivant">
             <ChevronRight size={16} />
           </button>
         </div>
