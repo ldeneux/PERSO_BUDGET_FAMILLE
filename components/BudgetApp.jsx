@@ -321,6 +321,7 @@ export default function BudgetApp({ session }) {
   return (
     <div className="w-full min-h-screen bg-stone-50 font-sans text-stone-900 flex">
       <aside className="w-56 shrink-0 bg-stone-100 border-r border-stone-200 min-h-screen p-4 hidden sm:flex flex-col">
+        <img src="/icon-512.png" alt="Budget famille" width={96} height={96} className="mx-auto mb-4" />
         <div className="mb-6 px-1">
           <p className="font-serif text-lg text-emerald-900">Budget famille</p>
           <p className="text-xs text-stone-500 truncate">{session.user.email}</p>
